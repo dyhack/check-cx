@@ -50,5 +50,3 @@ error.log
 .playwright-mcp
 .mcp.json
 
-# openspec
-openspec/changes/

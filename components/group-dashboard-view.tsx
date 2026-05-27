@@ -112,10 +112,14 @@ export function GroupDashboardView({ groupName, initialData }: GroupDashboardVie
   }, [groupName, selectedPeriod]);
 
   useEffect(() => {
-    setData(initialData);
-    if (initialData.trendPeriod) {
-      setGroupCache(groupName, initialData.trendPeriod, initialData);
-    }
+    const frame = window.requestAnimationFrame(() => {
+      setData(initialData);
+      if (initialData.trendPeriod) {
+        setGroupCache(groupName, initialData.trendPeriod, initialData);
+      }
+    });
+
+    return () => window.cancelAnimationFrame(frame);
   }, [groupName, initialData]);
 
   useEffect(() => {
@@ -137,13 +141,19 @@ export function GroupDashboardView({ groupName, initialData }: GroupDashboardVie
     if (selectedPeriod === data.trendPeriod) {
       return;
     }
-    refresh(selectedPeriod).catch(() => undefined);
+    const frame = window.requestAnimationFrame(() => {
+      refresh(selectedPeriod).catch(() => undefined);
+    });
+
+    return () => window.cancelAnimationFrame(frame);
   }, [data.trendPeriod, refresh, selectedPeriod]);
 
   useEffect(() => {
     if (!data.pollIntervalMs || data.pollIntervalMs <= 0 || latestCheckTimestamp === null) {
-      setTimeToNextRefresh(null);
-      return;
+      const frame = window.requestAnimationFrame(() => {
+        setTimeToNextRefresh(null);
+      });
+      return () => window.cancelAnimationFrame(frame);
     }
 
     const updateCountdown = () => {
@@ -152,9 +162,12 @@ export function GroupDashboardView({ groupName, initialData }: GroupDashboardVie
       );
     };
 
-    updateCountdown();
+    const frame = window.requestAnimationFrame(updateCountdown);
     const countdownTimer = window.setInterval(updateCountdown, 1000);
-    return () => window.clearInterval(countdownTimer);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.clearInterval(countdownTimer);
+    };
   }, [data.pollIntervalMs, latestCheckTimestamp]);
 
   const { providerTimelines, total, lastUpdated, pollIntervalLabel, displayName } = data;

@@ -1,6 +1,6 @@
 "use client";
 
-import {useCallback, useEffect, useMemo, useState} from "react";
+import {useCallback, useEffect, useMemo, useState, useSyncExternalStore} from "react";
 import {fetchWithCache, prefetchDashboardData, setCache} from "@/lib/core/frontend-cache";
 import {prefetchGroupData} from "@/lib/core/group-frontend-cache";
 import Link from "next/link";
@@ -88,6 +88,10 @@ const SORT_OPTIONS: Array<{ value: SortMode; label: string }> = [
   { value: "group", label: "按分组" },
   { value: "name", label: "按名称" },
 ];
+
+const emptySubscribe = () => () => undefined;
+const getClientSnapshot = () => true;
+const getServerSnapshot = () => false;
 
 // 未分组标识常量
 const UNGROUPED_KEY = "__ungrouped__";
@@ -334,7 +338,11 @@ export function DashboardView({ initialData }: DashboardViewProps) {
       initialData.generatedAt
     )
   );
-  const [isDndReady, setIsDndReady] = useState(false);
+  const isDndReady = useSyncExternalStore(
+    emptySubscribe,
+    getClientSnapshot,
+    getServerSnapshot
+  );
   
   const { providerTimelines, total, lastUpdated, pollIntervalLabel } = data;
   const availabilityStats: AvailabilityStatsMap = data.availabilityStats ?? {};
@@ -382,19 +390,12 @@ export function DashboardView({ initialData }: DashboardViewProps) {
   );
 
   useEffect(() => {
-    setIsDndReady(true);
-  }, []);
-
-  useEffect(() => {
-    // Client-side only: load from localStorage
-    if (typeof window !== "undefined") {
-      // Load sort mode
+    const frame = window.requestAnimationFrame(() => {
       const savedSortMode = localStorage.getItem("check-cx-sort-mode");
       if (savedSortMode && ["custom", "group", "name"].includes(savedSortMode)) {
         setSortMode(savedSortMode as SortMode);
       }
 
-      // Load group order
       const saved = localStorage.getItem("check-cx-group-order");
       if (saved) {
         try {
@@ -402,7 +403,6 @@ export function DashboardView({ initialData }: DashboardViewProps) {
           if (Array.isArray(parsed)) {
             setOrderedGroupNames(() => {
               const currentSet = new Set(initialGroupedTimelines.map((group) => group.groupName));
-              // Filter out saved names that no longer exist, and add new ones
               const validSaved = parsed.filter(name => currentSet.has(name));
               const newNames = initialGroupedTimelines
                 .map((group) => group.groupName)
@@ -415,7 +415,6 @@ export function DashboardView({ initialData }: DashboardViewProps) {
         }
       }
 
-      // Load selected tags
       const savedTags = localStorage.getItem("check-cx-selected-tags");
       if (savedTags) {
         try {
@@ -427,7 +426,9 @@ export function DashboardView({ initialData }: DashboardViewProps) {
           console.error("Failed to parse selected tags", e);
         }
       }
-    }
+    });
+
+    return () => window.cancelAnimationFrame(frame);
   }, [initialGroupedTimelines]);
 
   // Save sort mode to localStorage when it changes
@@ -446,23 +447,22 @@ export function DashboardView({ initialData }: DashboardViewProps) {
 
   // Sync when data updates (e.g. polling adds/removes groups)
   useEffect(() => {
-    setOrderedGroupNames(prev => {
-      const currentNames = groupedNames;
-      const currentSet = new Set(currentNames);
+    const frame = window.requestAnimationFrame(() => {
+      setOrderedGroupNames(prev => {
+        const currentNames = groupedNames;
+        const currentSet = new Set(currentNames);
+        const existingOrdered = prev.filter(name => currentSet.has(name));
+        const newGroups = currentNames.filter(name => !prev.includes(name));
 
-      // Keep existing order for groups that still exist
-      const existingOrdered = prev.filter(name => currentSet.has(name));
+        if (existingOrdered.length === prev.length && newGroups.length === 0 && existingOrdered.length === currentNames.length) {
+          return prev;
+        }
 
-      // Add any new groups that weren't in the previous order
-      const newGroups = currentNames.filter(name => !prev.includes(name));
-
-      // If nothing changed in terms of set membership, don't update state to avoid re-renders
-      if (existingOrdered.length === prev.length && newGroups.length === 0 && existingOrdered.length === currentNames.length) {
-        return prev;
-      }
-
-      return [...existingOrdered, ...newGroups];
+        return [...existingOrdered, ...newGroups];
+      });
     });
+
+    return () => window.cancelAnimationFrame(frame);
   }, [groupedNames]);
 
   const handleDragEnd = useCallback((event: DragEndEvent) => {
@@ -511,11 +511,14 @@ export function DashboardView({ initialData }: DashboardViewProps) {
   }, [selectedPeriod]);
 
   useEffect(() => {
-    setData(initialData);
-    // 将服务端数据放入前端缓存
-    if (initialData.trendPeriod) {
-      setCache(initialData.trendPeriod, initialData);
-    }
+    const frame = window.requestAnimationFrame(() => {
+      setData(initialData);
+      if (initialData.trendPeriod) {
+        setCache(initialData.trendPeriod, initialData);
+      }
+    });
+
+    return () => window.cancelAnimationFrame(frame);
   }, [initialData]);
 
   useEffect(() => {
@@ -548,22 +551,32 @@ export function DashboardView({ initialData }: DashboardViewProps) {
     if (selectedPeriod === data.trendPeriod) {
       return;
     }
-    refresh(selectedPeriod).catch(() => undefined);
+    const frame = window.requestAnimationFrame(() => {
+      refresh(selectedPeriod).catch(() => undefined);
+    });
+
+    return () => window.cancelAnimationFrame(frame);
   }, [data.trendPeriod, refresh, selectedPeriod]);
 
   useEffect(() => {
     if (!data.pollIntervalMs || data.pollIntervalMs <= 0 || latestCheckTimestamp === null) {
-      setTimeToNextRefresh(null);
-      return;
+      const frame = window.requestAnimationFrame(() => {
+        setTimeToNextRefresh(null);
+      });
+      return () => window.cancelAnimationFrame(frame);
     }
+
     const updateCountdown = () => {
       setTimeToNextRefresh(
         computeRemainingMs(data.pollIntervalMs, latestCheckTimestamp)
       );
     };
-    updateCountdown();
+    const frame = window.requestAnimationFrame(updateCountdown);
     const countdownTimer = window.setInterval(updateCountdown, 1000);
-    return () => window.clearInterval(countdownTimer);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.clearInterval(countdownTimer);
+    };
   }, [data.pollIntervalMs, latestCheckTimestamp]);
 
   // 根据卡片数量决定宽屏列数
@@ -599,13 +612,17 @@ export function DashboardView({ initialData }: DashboardViewProps) {
 
   // Sync selected tags when data updates (remove tags that no longer exist)
   useEffect(() => {
-    setSelectedTags(prev => {
-      const validTags = prev.filter(tag => allTags.includes(tag));
-      if (validTags.length === prev.length) {
-        return prev;
-      }
-      return validTags;
+    const frame = window.requestAnimationFrame(() => {
+      setSelectedTags(prev => {
+        const validTags = prev.filter(tag => allTags.includes(tag));
+        if (validTags.length === prev.length) {
+          return prev;
+        }
+        return validTags;
+      });
     });
+
+    return () => window.cancelAnimationFrame(frame);
   }, [allTags]);
 
   // Filter and sort groups based on search query and sort mode
